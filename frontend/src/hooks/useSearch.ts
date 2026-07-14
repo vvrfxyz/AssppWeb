@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { Software } from "../types";
-import { searchApps, lookupApp } from "../api/search";
+import { searchUnified, lookupApp } from "../api/search";
 
 interface SearchState {
   term: string;
@@ -28,7 +28,7 @@ export const useSearch = create<SearchState>((set) => ({
   search: async (term, country, entity) => {
     set({ loading: true, error: null, term, country, entity });
     try {
-      const apps = await searchApps(term, country, entity);
+      const apps = await searchUnified(term, country, entity);
       set({ results: apps });
     } catch (e) {
       set({

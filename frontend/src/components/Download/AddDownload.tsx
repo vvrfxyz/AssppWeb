@@ -3,11 +3,12 @@ import { useTranslation } from "react-i18next";
 import PageContainer from "../Layout/PageContainer";
 import AppIcon from "../common/AppIcon";
 import CountrySelect from "../common/CountrySelect";
+import VersionList from "../common/VersionList";
 import { useAccounts } from "../../hooks/useAccounts";
 import { useDownloadAction } from "../../hooks/useDownloadAction";
 import { useSettingsStore } from "../../store/settings";
 import { useToastStore } from "../../store/toast";
-import { lookupApp } from "../../api/search";
+import { searchUnified } from "../../api/search";
 import { listVersions } from "../../apple/versionFinder";
 import { countryCodeMap, storeIdToCountry } from "../../apple/config";
 import { firstAccountCountry } from "../../utils/account";
@@ -16,7 +17,7 @@ import type { Software } from "../../types";
 
 export default function AddDownload() {
   const { accounts, updateAccount } = useAccounts();
-  const { defaultCountry } = useSettingsStore();
+  const { defaultCountry, defaultEntity } = useSettingsStore();
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const {
@@ -26,19 +27,22 @@ export default function AddDownload() {
     toastLicenseError,
   } = useDownloadAction();
 
-  const [bundleId, setBundleId] = useState("");
+  const [term, setTerm] = useState("");
   const [country, setCountry] = useState(defaultCountry);
   const [countryTouched, setCountryTouched] = useState(false);
   const [selectedAccount, setSelectedAccount] = useState("");
+  const [results, setResults] = useState<Software[]>([]);
   const [app, setApp] = useState<Software | null>(null);
   const [versions, setVersions] = useState<string[]>([]);
-  const [selectedVersion, setSelectedVersion] = useState("");
-  const [step, setStep] = useState<"lookup" | "ready" | "versions">("lookup");
+  const [showVersions, setShowVersions] = useState(false);
+  const [downloadingVersion, setDownloadingVersion] = useState<string | null>(
+    null,
+  );
   const [loadingAction, setLoadingAction] = useState<
-    "lookup" | "license" | "versions" | "download" | null
+    "search" | "license" | "versions" | "download" | null
   >(null);
 
-  const isLoading = loadingAction !== null;
+  const isLoading = loadingAction !== null || downloadingVersion !== null;
 
   const availableCountryCodes = Array.from(
     new Set(
@@ -82,18 +86,32 @@ export default function AddDownload() {
     }
   }, [autoCountry, country, countryTouched, defaultCountry]);
 
-  async function handleLookup(e: React.FormEvent) {
+  function selectApp(result: Software) {
+    setApp(result);
+    setResults([]);
+    setVersions([]);
+    setShowVersions(false);
+  }
+
+  async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    if (!bundleId.trim()) return;
-    setLoadingAction("lookup");
+    if (!term.trim()) return;
+    setLoadingAction("search");
+    setApp(null);
+    setVersions([]);
+    setShowVersions(false);
     try {
-      const result = await lookupApp(bundleId.trim(), country);
-      if (!result) {
+      const found = await searchUnified(term.trim(), country, defaultEntity);
+      if (found.length === 0) {
+        setResults([]);
         addToast(t("downloads.add.notFound"), "error");
         return;
       }
-      setApp(result);
-      setStep("ready");
+      if (found.length === 1) {
+        selectApp(found[0]);
+        return;
+      }
+      setResults(found);
     } catch (e) {
       addToast(getErrorMessage(e, t("downloads.add.lookupFailed")), "error");
     } finally {
@@ -120,7 +138,7 @@ export default function AddDownload() {
       const result = await listVersions(account, app);
       setVersions(result.versions);
       await updateAccount({ ...account, cookies: result.updatedCookies });
-      setStep("versions");
+      setShowVersions(true);
     } catch (e) {
       addToast(getErrorMessage(e, t("downloads.add.versionsFailed")), "error");
     } finally {
@@ -128,11 +146,11 @@ export default function AddDownload() {
     }
   }
 
-  async function handleDownload() {
+  async function handleDownloadLatest() {
     if (!account || !app) return;
     setLoadingAction("download");
     try {
-      await startDownload(account, app, selectedVersion || undefined);
+      await startDownload(account, app, undefined);
     } catch (e) {
       toastDownloadError(account, app, e);
     } finally {
@@ -140,31 +158,43 @@ export default function AddDownload() {
     }
   }
 
+  async function handleDownloadVersion(versionId: string) {
+    if (!account || !app) return;
+    setDownloadingVersion(versionId);
+    try {
+      await startDownload(account, app, versionId);
+    } catch (e) {
+      toastDownloadError(account, app, e);
+    } finally {
+      setDownloadingVersion(null);
+    }
+  }
+
   return (
     <PageContainer title={t("downloads.add.title")}>
       <div className="space-y-6">
-        <form onSubmit={handleLookup} className="space-y-4">
+        <form onSubmit={handleSearch} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              {t("downloads.add.bundleId")}
+              {t("downloads.add.searchLabel")}
             </label>
             <div className="flex gap-2">
               <input
                 type="text"
-                value={bundleId}
-                onChange={(e) => setBundleId(e.target.value)}
+                value={term}
+                onChange={(e) => setTerm(e.target.value)}
                 placeholder={t("downloads.add.placeholder")}
                 className="block w-full flex-1 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-base text-gray-900 dark:text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50 dark:disabled:bg-gray-800/50 disabled:text-gray-500 dark:disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
                 disabled={isLoading}
               />
               <button
                 type="submit"
-                disabled={isLoading || !bundleId.trim()}
+                disabled={isLoading || !term.trim()}
                 className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors whitespace-nowrap"
               >
-                {loadingAction === "lookup"
-                  ? t("downloads.add.lookingUp")
-                  : t("downloads.add.lookup")}
+                {loadingAction === "search"
+                  ? t("downloads.add.searching")
+                  : t("downloads.add.search")}
               </button>
             </div>
           </div>
@@ -201,7 +231,7 @@ export default function AddDownload() {
           </div>
         </form>
 
-        {!app && !isLoading && (
+        {!app && results.length === 0 && !isLoading && (
           <div className="flex flex-col items-center justify-center py-12 px-4 bg-gray-50 dark:bg-gray-900/30 border-2 border-dashed border-gray-200 dark:border-gray-800 rounded-2xl">
             <div className="bg-white dark:bg-gray-800 p-4 rounded-full shadow-sm mb-4 border border-gray-100 dark:border-gray-700">
               <svg
@@ -227,6 +257,38 @@ export default function AddDownload() {
           </div>
         )}
 
+        {results.length > 0 && (
+          <div className="space-y-2">
+            {results.map((result) => (
+              <button
+                key={result.id}
+                type="button"
+                onClick={() => selectApp(result)}
+                className="block w-full text-left bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4 hover:border-gray-300 dark:hover:border-gray-600 transition-colors"
+              >
+                <div className="flex items-center gap-4">
+                  <AppIcon
+                    url={result.artworkUrl}
+                    name={result.name}
+                    size="md"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-gray-900 dark:text-white truncate">
+                      {result.name}
+                    </p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 truncate">
+                      {result.artistName}
+                    </p>
+                    <p className="text-xs text-gray-400 dark:text-gray-500 truncate">
+                      {result.bundleID}
+                    </p>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+
         {app && (
           <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 p-4">
             <div className="flex items-center gap-4 mb-4">
@@ -245,26 +307,6 @@ export default function AddDownload() {
               </div>
             </div>
 
-            {step === "versions" && versions.length > 0 && (
-              <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  {t("downloads.add.versionOptional")}
-                </label>
-                <select
-                  value={selectedVersion}
-                  onChange={(e) => setSelectedVersion(e.target.value)}
-                  className="w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-base text-gray-900 dark:text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 truncate disabled:bg-gray-50 dark:disabled:bg-gray-800/50 disabled:text-gray-500 dark:disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
-                >
-                  <option value="">{t("downloads.add.latest")}</option>
-                  {versions.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
             <div className="flex flex-wrap gap-2">
               {(app.price === undefined || app.price === 0) && (
                 <button
@@ -277,7 +319,7 @@ export default function AddDownload() {
                     : t("downloads.add.getLicense")}
                 </button>
               )}
-              {step !== "versions" && (
+              {!showVersions && (
                 <button
                   onClick={handleLoadVersions}
                   disabled={isLoading || !account}
@@ -289,15 +331,31 @@ export default function AddDownload() {
                 </button>
               )}
               <button
-                onClick={handleDownload}
+                onClick={handleDownloadLatest}
                 disabled={isLoading || !account}
                 className="px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {loadingAction === "download"
                   ? t("downloads.add.processing")
-                  : t("downloads.add.download")}
+                  : t("downloads.add.downloadLatest")}
               </button>
             </div>
+
+            {showVersions && versions.length > 0 && account && (
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  {t("downloads.add.versionOptional")}
+                </label>
+                <VersionList
+                  account={account}
+                  app={app}
+                  versions={versions}
+                  downloadingVersion={downloadingVersion}
+                  onDownload={handleDownloadVersion}
+                  disabled={loadingAction !== null}
+                />
+              </div>
+            )}
           </div>
         )}
       </div>
